@@ -9,11 +9,11 @@ import (
     "golang.org/x/net/ipv4"
 )
 
-func scan(ip net.IP, ipnet *net.IPNet) {
-    c, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
+func scan(ip net.IP, ipnet *net.IPNet, localAddr net.Addr) {
+    c, err := icmp.ListenPacket("ip4:icmp", localAddr.String())
     if err != nil {
         fmt.Fprintf(os.Stderr, "Error listening: %v\n", err)
-        os.Exit(1)
+        return
     }
     defer c.Close()
 
@@ -29,33 +29,37 @@ func scan(ip net.IP, ipnet *net.IPNet) {
         bytes, err := msg.Marshal(nil)
         if err != nil {
             fmt.Fprintf(os.Stderr, "Error marshalling ICMP: %v\n", err)
-            os.Exit(1)
+            return
         }
 
         _, err = c.WriteTo(bytes, dst)
         if err != nil {
             fmt.Fprintf(os.Stderr, "Error sending ICMP: %v\n", err)
-            os.Exit(1)
+            return
         }
-        // Lecture de la réponse ICMP ici
+
         res := make([]byte, 1500)
         c.SetReadDeadline(time.Now().Add(time.Second))
-        n, _, err := c.ReadFrom(res)
+        n, peer, err := c.ReadFrom(res)
         if err != nil {
             if neterr, ok := err.(*net.OpError); ok && neterr.Timeout() {
                 fmt.Printf("%s is down\n", ip)
                 continue
             }
             fmt.Fprintf(os.Stderr, "Error reading ICMP: %v\n", err)
-            os.Exit(1)
+            return
+        }
+        if peer.String() != dst.String() {
+            fmt.Fprintf(os.Stderr, "Received ICMP response from unexpected source: %v\n", peer)
+            continue
         }
         res = res[:n]
         rm, err := icmp.ParseMessage(1, res)
         if err != nil {
             fmt.Fprintf(os.Stderr, "Error parsing ICMP: %v\n", err)
-            os.Exit(1)
+            return
         }
-		if rm.Type == ipv4.ICMPTypeEchoReply {
+        if rm.Type == ipv4.ICMPTypeEchoReply {
             fmt.Printf("%s is up\n", ip)
         }
     }
@@ -64,15 +68,21 @@ func scan(ip net.IP, ipnet *net.IPNet) {
 func main() {
     if len(os.Args) != 2 {
         fmt.Fprintf(os.Stderr, "Usage: %s IP/CIDR\n", os.Args[0])
-        os.Exit(1)
+        return
     }
 
     ip, ipnet, err := net.ParseCIDR(os.Args[1])
     if err != nil {
         fmt.Fprintf(os.Stderr, "Invalid CIDR: %v\n", err)
-        os.Exit(1)
+        return
     }
-    scan(ip,ipnet)
+	 localAddr, err := net.ResolveIPAddr("ip4", "0.0.0.0")
+	 if err != nil {
+		 fmt.Fprintf(os.Stderr, "Error resolving local address: %v\n", err)
+		 os.Exit(1)
+	 }
+ 
+	 scan(ip, ipnet, localAddr)
 }
 
 func inc(ip net.IP) {
